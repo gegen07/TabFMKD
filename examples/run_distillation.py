@@ -1,12 +1,21 @@
 """Distill a tabular teacher into XGBoost and print a comparison table.
 
-Pass ``--teacher tabfm`` on Python >= 3.11 after
-``pip install 'tabfm-kd[tabfm]'``.
+Run from a checkout without installing this package::
+
+    python examples/run_distillation.py --teacher sklearn --dataset breast_cancer
+
+Pass ``--teacher tabfm`` on Python >= 3.11 if Google TabFM is already installed.
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+_SRC = Path(__file__).resolve().parents[1] / "src"
+if _SRC.is_dir():
+    sys.path.insert(0, str(_SRC))
 
 from sklearn.model_selection import train_test_split
 
