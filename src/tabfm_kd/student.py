@@ -71,20 +71,81 @@ class FeatureEncoder:
         return np.asarray(self._pipeline.transform(frame), dtype=np.float32)
 
 
+def _xgboost_multiclass_sample_major() -> bool:
+    """XGBoost 2.1+ passes custom multiclass preds as ``(n_samples, n_classes)``."""
+    version = getattr(xgb, "__version__", "0.0.0").split("-")[0]
+    parts = version.split(".")
+    try:
+        major = int(parts[0])
+        minor = int(parts[1]) if len(parts) > 1 else 0
+    except ValueError:
+        return True
+    return (major, minor) >= (2, 1)
+
+
+def _unpack_multiclass_scores(
+    raw: NDArray[np.floating],
+    n_samples: int,
+    n_classes: int,
+) -> tuple[NDArray[np.float64], str]:
+    """Return sample-major ``(n_samples, n_classes)`` scores and the input packing.
+
+    Packing is ``"sample"`` (row-major) or ``"class"`` (XGBoost < 2.1 class-major).
+    ``n_samples`` is the number of rows being scored — never inferred as
+    ``raw.size // n_classes``, which silently shrinks a 1D ``(n,)`` vector
+    (one score per row) to ``n / n_classes`` predictions.
+    """
+    array = np.asarray(raw, dtype=np.float64)
+    expected = n_samples * n_classes
+    if array.ndim == 2:
+        if array.shape == (n_samples, n_classes):
+            return array, "sample"
+        if array.shape == (n_classes, n_samples):
+            return array.T, "class"
+        raise ValueError(
+            f"Expected multiclass scores of shape {(n_samples, n_classes)}, got {array.shape}"
+        )
+    flat = array.reshape(-1)
+    if flat.size == expected:
+        if _xgboost_multiclass_sample_major():
+            return flat.reshape(n_samples, n_classes), "sample"
+        return flat.reshape(n_classes, n_samples).T, "class"
+    raise ValueError(
+        f"Expected {expected} multiclass scores for {(n_samples, n_classes)}, got shape {array.shape}"
+    )
+
+
+def _pack_multiclass_grad(
+    grad: NDArray[np.float64],
+    hess: NDArray[np.float64],
+    layout: str,
+    preds_ndim: int,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    if preds_ndim == 2:
+        if layout == "class":
+            return grad.T, hess.T
+        return grad, hess
+    if layout == "class":
+        return grad.T.ravel(), hess.T.ravel()
+    return grad.ravel(), hess.ravel()
+
+
 def _multiclass_soft_objective(targets: NDArray[np.float64]):
     """Softmax cross-entropy against mixed teacher/student targets.
 
-    XGBoost packs multiclass margins as class-major ``(n_classes, n_samples)``.
-    The diagonal Hessian ``p (1 - p)`` is the usual tree approximation.
+    XGBoost 2.1+ supplies a sample-major ``(n_samples, n_classes)`` margin
+    matrix; older releases used a class-major 1D packing. Gradients are
+    returned in the same layout. The diagonal Hessian ``p (1 - p)`` is the
+    usual tree approximation.
     """
     n_samples, n_classes = targets.shape
 
     def objective(preds: NDArray[np.floating], _dtrain: xgb.DMatrix):
-        logits = np.reshape(preds, (n_classes, n_samples), order="C").T
+        logits, layout = _unpack_multiclass_scores(preds, n_samples, n_classes)
         probs = softmax_from_logits(logits)
-        grad = (probs - targets).T.ravel()
-        hess = np.maximum((probs * (1.0 - probs)).T.ravel(), 1e-6)
-        return grad, hess
+        grad = probs - targets
+        hess = np.maximum(probs * (1.0 - probs), 1e-6)
+        return _pack_multiclass_grad(grad, hess, layout, np.asarray(preds).ndim)
 
     return objective
 
@@ -194,6 +255,9 @@ class XGBoostStudent:
             return self
 
         dtrain = xgb.DMatrix(features, label=encoded, weight=sample_weight)
+        # ``multi:softprob`` marks the booster as K-class so predict() emits
+        # one score per class. The custom ``obj`` still supplies the KD loss.
+        params["objective"] = "multi:softprob"
         params["num_class"] = self.n_classes_
         params["disable_default_eval_metric"] = 1
         self._uses_custom_obj = True
@@ -205,29 +269,58 @@ class XGBoostStudent:
         )
         return self
 
-    def _raw_predict(self, X: Any) -> NDArray[np.float64]:
+    def _raw_predict(self, X: Any, *, output_margin: bool = False) -> tuple[NDArray[np.float64], int]:
         if self.booster_ is None:
             raise RuntimeError("XGBoostStudent must be fit before predict")
-        dtest = xgb.DMatrix(self.encoder_.transform(X))
-        return np.asarray(self.booster_.predict(dtest), dtype=np.float64)
+        features = self.encoder_.transform(X)
+        dtest = xgb.DMatrix(features)
+        raw = np.asarray(
+            self.booster_.predict(dtest, output_margin=output_margin),
+            dtype=np.float64,
+        )
+        return raw, int(features.shape[0])
 
     def predict_proba(self, X: Any) -> NDArray[np.float64]:
         if self.task_type != "classification":
             raise AttributeError("predict_proba is only available for classification")
-        raw = self._raw_predict(X)
         if self.n_classes_ == 2:
+            raw, n_rows = self._raw_predict(X, output_margin=False)
             if raw.ndim == 2:
+                if raw.shape[0] != n_rows:
+                    raise ValueError(
+                        f"Expected {n_rows} probability rows, got {raw.shape}"
+                    )
                 return raw
             positive = raw.reshape(-1)
+            if positive.shape[0] != n_rows:
+                raise ValueError(
+                    f"Expected {n_rows} probability rows, got {positive.shape[0]}"
+                )
             return np.column_stack([1.0 - positive, positive])
-        if raw.ndim == 2:
-            return softmax_from_logits(raw) if self._uses_custom_obj else raw
-        n_samples = raw.size // int(self.n_classes_)
-        logits = np.reshape(raw, (int(self.n_classes_), n_samples), order="C").T
-        return softmax_from_logits(logits)
+
+        raw, n_rows = self._raw_predict(X, output_margin=self._uses_custom_obj)
+        n_classes = int(self.n_classes_)
+        apply_softmax = self._uses_custom_obj
+        try:
+            scores, _layout = _unpack_multiclass_scores(raw, n_rows, n_classes)
+        except ValueError:
+            if not self._uses_custom_obj:
+                raise
+            # Some XGBoost builds ignore output_margin for a custom objective
+            # and only emit (n_samples, n_classes) after the softprob inverse.
+            raw, n_rows = self._raw_predict(X, output_margin=False)
+            scores, _layout = _unpack_multiclass_scores(raw, n_rows, n_classes)
+            apply_softmax = False
+        if apply_softmax:
+            return softmax_from_logits(scores)
+        return scores
 
     def predict(self, X: Any) -> NDArray:
         if self.task_type == "regression":
-            return self._raw_predict(X).reshape(-1)
+            raw, n_rows = self._raw_predict(X)
+            pred = raw.reshape(-1)
+            if pred.shape[0] != n_rows:
+                raise ValueError(f"Expected {n_rows} predictions, got {pred.shape[0]}")
+            return pred
         proba = self.predict_proba(X)
         return self.classes_[proba.argmax(axis=1)]

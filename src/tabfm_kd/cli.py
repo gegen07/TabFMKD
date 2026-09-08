@@ -11,10 +11,14 @@ _SRC = Path(__file__).resolve().parent.parent
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from sklearn.model_selection import train_test_split
-
-from tabfm_kd.data import load_dataset
+from tabfm_kd.data import load_dataset, train_eval_split
 from tabfm_kd.distillation import DistillConfig, TabFMDistiller
+
+
+def _drop_columns(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [col.strip() for col in raw.split(",") if col.strip()]
 
 
 def _add_shared_data_args(parser: argparse.ArgumentParser) -> None:
@@ -23,35 +27,40 @@ def _add_shared_data_args(parser: argparse.ArgumentParser) -> None:
         default="breast_cancer",
         help="Built-in table: breast_cancer, wine, iris, diabetes.",
     )
-    parser.add_argument("--csv", default=None, help="Optional CSV path instead of --dataset.")
+    parser.add_argument(
+        "--csv",
+        default=None,
+        help="Path to CSV / TSV / Parquet / Feather instead of --dataset.",
+    )
     parser.add_argument("--target", default=None, help="Target column when using --csv.")
+    parser.add_argument(
+        "--drop",
+        default=None,
+        help="Comma-separated feature columns to drop (ids, timestamps, leaks).",
+    )
     parser.add_argument(
         "--task",
         dest="task_type",
         choices=["classification", "regression"],
         default="classification",
+        help="Supervised task type. Used for --csv tables; ignored for built-ins.",
     )
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
 
 
-def _split(bundle, test_size: float, seed: int):
-    stratify = bundle.y if bundle.task_type == "classification" else None
-    return train_test_split(
-        bundle.X,
-        bundle.y,
-        test_size=test_size,
-        random_state=seed,
-        stratify=stratify,
-    )
-
-
 def _cmd_distill(args: argparse.Namespace) -> int:
     bundle = load_dataset(
-        args.dataset, csv=args.csv, target=args.target, task_type=args.task_type
+        args.dataset,
+        csv=args.csv,
+        target=args.target,
+        task_type=args.task_type,
+        drop=_drop_columns(args.drop),
     )
     task_type = bundle.task_type
-    X_train, X_test, y_train, y_test = _split(bundle, args.test_size, args.seed)
+    X_train, X_test, y_train, y_test = train_eval_split(
+        bundle, test_size=args.test_size, seed=args.seed
+    )
 
     config = DistillConfig(
         task_type=task_type,
@@ -84,9 +93,15 @@ def _cmd_distill(args: argparse.Namespace) -> int:
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     bundle = load_dataset(
-        args.dataset, csv=args.csv, target=args.target, task_type=args.task_type
+        args.dataset,
+        csv=args.csv,
+        target=args.target,
+        task_type=args.task_type,
+        drop=_drop_columns(args.drop),
     )
-    _, X_test, _, y_test = _split(bundle, args.test_size, args.seed)
+    _, X_test, _, y_test = train_eval_split(
+        bundle, test_size=args.test_size, seed=args.seed
+    )
     distiller = TabFMDistiller.load(args.student)
     metrics = distiller.evaluate(X_test, y_test)
     print(json.dumps(metrics, indent=2))
@@ -139,4 +154,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

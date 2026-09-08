@@ -54,6 +54,14 @@ def test_multiclass_student_custom_objective():
     assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-5)
     assert (student.predict(X) == y).mean() > 0.8
 
+    # Holdout size must not be inferred as ``n // n_classes`` (wine test: 45 vs 15).
+    n_eval = 17
+    proba_eval = student.predict_proba(X[:n_eval])
+    pred_eval = student.predict(X[:n_eval])
+    assert proba_eval.shape == (n_eval, 3)
+    assert pred_eval.shape == (n_eval,)
+    assert np.allclose(proba_eval.sum(axis=1), 1.0, atol=1e-5)
+
 
 def test_regression_student_and_mixed_types():
     X_num, y = make_regression(n_samples=80, n_features=4, random_state=2)
