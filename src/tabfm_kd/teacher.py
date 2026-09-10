@@ -11,10 +11,47 @@ distillation pipeline can be exercised without downloading those weights.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
+
+logger = logging.getLogger(__name__)
+
+
+def cuda_is_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except ImportError:
+        return False
+
+
+def resolve_compute_device(device: str | None = "auto") -> str:
+    """Map ``auto`` / ``gpu`` / ``cuda`` / ``cpu`` to a concrete device string."""
+    requested = (device or "auto").strip().lower()
+    if requested in {"auto", ""}:
+        return "cuda" if cuda_is_available() else "cpu"
+    if requested == "gpu":
+        requested = "cuda"
+    if requested == "cpu":
+        return "cpu"
+    if requested == "cuda" or requested.startswith("cuda:"):
+        if not cuda_is_available():
+            logger.warning("CUDA was requested but is not available; using CPU")
+            return "cpu"
+        return requested
+    return requested
+
+
+def resolve_teacher_batch_size(batch_size: int | None, device: str) -> int:
+    if batch_size is not None:
+        if batch_size < 1:
+            raise ValueError("teacher_batch_size must be >= 1")
+        return batch_size
+    return 32 if str(device).startswith("cuda") else 1
 
 
 class Teacher(Protocol):
@@ -51,10 +88,11 @@ class TabFMTeacher:
         n_estimators: int = 8,
         max_num_rows: int | None = 100,
         max_num_features: int | None = 500,
-        batch_size: int | None = 1,
+        batch_size: int | None = None,
         cache_context: bool = True,
         random_state: int = 42,
         verbose: bool = False,
+        device: str = "auto",
         **estimator_kwargs: Any,
     ) -> None:
         if task_type not in {"classification", "regression"}:
@@ -66,7 +104,8 @@ class TabFMTeacher:
         self.n_estimators = n_estimators
         self.max_num_rows = max_num_rows
         self.max_num_features = max_num_features
-        self.batch_size = batch_size
+        self.device = resolve_compute_device(device)
+        self.batch_size = resolve_teacher_batch_size(batch_size, self.device)
         self.cache_context = cache_context
         self.random_state = random_state
         self.verbose = verbose
@@ -74,6 +113,21 @@ class TabFMTeacher:
         self._backbone: Any = None
         self.estimator_: Any = None
         self.classes_: NDArray | None = None
+
+    def _place_backbone(self, backbone: Any) -> Any:
+        if self.device == "cpu":
+            return backbone
+        if hasattr(backbone, "to"):
+            try:
+                return backbone.to(self.device)
+            except (TypeError, RuntimeError, ValueError):
+                logger.warning("Could not move TabFM backbone to %s via .to()", self.device)
+        if str(self.device).startswith("cuda") and hasattr(backbone, "cuda"):
+            try:
+                return backbone.cuda()
+            except (TypeError, RuntimeError, ValueError):
+                logger.warning("Could not move TabFM backbone to CUDA via .cuda()")
+        return backbone
 
     def _load_backbone(self) -> Any:
         if self._backbone is not None:
@@ -92,7 +146,20 @@ class TabFMTeacher:
         model_type = (
             "classification" if self.task_type == "classification" else "regression"
         )
-        self._backbone = tabfm_loader.load(model_type=model_type)
+        logger.info(
+            "Loading TabFM %s backbone (%s) on %s",
+            model_type,
+            self.backend,
+            self.device,
+        )
+        load_kwargs: dict[str, Any] = {"model_type": model_type}
+        if self.backend == "pytorch":
+            load_kwargs["device"] = self.device
+        try:
+            backbone = tabfm_loader.load(**load_kwargs)
+        except TypeError:
+            backbone = tabfm_loader.load(model_type=model_type)
+        self._backbone = self._place_backbone(backbone)
         return self._backbone
 
     def _make_estimator(self) -> Any:
@@ -145,6 +212,7 @@ class TabFMTeacher:
             cache_context=self.cache_context,
             random_state=self.random_state,
             verbose=self.verbose,
+            device=self.device,
             **self.estimator_kwargs,
         )
         clone._backbone = self._backbone
@@ -159,6 +227,7 @@ _TABFM_ONLY_KEYS = {
     "batch_size",
     "cache_context",
     "verbose",
+    "device",
 }
 
 

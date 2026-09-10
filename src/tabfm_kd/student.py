@@ -174,6 +174,7 @@ class XGBoostStudent:
         tree_method: str = "hist",
         random_state: int = 42,
         verbose: bool = False,
+        device: str = "cpu",
         **xgb_params: Any,
     ) -> None:
         if task_type not in {"classification", "regression"}:
@@ -190,6 +191,7 @@ class XGBoostStudent:
         self.tree_method = tree_method
         self.random_state = random_state
         self.verbose = verbose
+        self.device = device
         self.xgb_params = xgb_params
         self.encoder_ = FeatureEncoder()
         self.booster_: xgb.Booster | None = None
@@ -209,6 +211,8 @@ class XGBoostStudent:
             "seed": self.random_state,
             "verbosity": 1 if self.verbose else 0,
         }
+        if self.device and self.device != "cpu":
+            params["device"] = self.device
         params.update(self.xgb_params)
         return params
 

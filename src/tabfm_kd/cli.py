@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -13,6 +14,20 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 
 from tabfm_kd.data import load_dataset, train_eval_split
 from tabfm_kd.distillation import DistillConfig, TabFMDistiller
+
+logger = logging.getLogger("tabfm_kd")
+
+
+def _configure_logging(level: str) -> None:
+    package = logging.getLogger("tabfm_kd")
+    if not package.handlers:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+        )
+        package.addHandler(handler)
+    package.setLevel(getattr(logging, level.upper(), logging.INFO))
+    package.propagate = False
 
 
 def _drop_columns(raw: str | None) -> list[str]:
@@ -47,6 +62,12 @@ def _add_shared_data_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging verbosity for distillation progress.",
+    )
 
 
 def _cmd_distill(args: argparse.Namespace) -> int:
@@ -58,9 +79,17 @@ def _cmd_distill(args: argparse.Namespace) -> int:
         drop=_drop_columns(args.drop),
     )
     task_type = bundle.task_type
+    logger.info(
+        "Loaded %s: %d rows, %d features, task=%s",
+        bundle.name,
+        len(bundle.X),
+        bundle.X.shape[1],
+        task_type,
+    )
     X_train, X_test, y_train, y_test = train_eval_split(
         bundle, test_size=args.test_size, seed=args.seed
     )
+    logger.info("Split into %d train / %d eval rows", len(y_train), len(y_test))
 
     config = DistillConfig(
         task_type=task_type,
@@ -69,6 +98,9 @@ def _cmd_distill(args: argparse.Namespace) -> int:
         teacher_n_estimators=args.teacher_estimators,
         teacher_max_num_rows=args.max_num_rows,
         teacher_sample_size=args.teacher_sample_size,
+        teacher_batch_size=args.teacher_batch_size,
+        device=args.device,
+        predict_chunk_size=args.predict_chunk_size,
         temperature=args.temperature,
         alpha=args.alpha,
         n_folds=args.n_folds,
@@ -131,6 +163,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     distill.add_argument("--n-folds", type=int, default=5)
+    distill.add_argument(
+        "--device",
+        default="auto",
+        help="Compute device: auto (CUDA if available), cpu, or cuda.",
+    )
+    distill.add_argument(
+        "--teacher-batch-size",
+        type=int,
+        default=None,
+        help="TabFM inference batch size. Default: 32 on GPU, 1 on CPU.",
+    )
+    distill.add_argument(
+        "--predict-chunk-size",
+        type=int,
+        default=8192,
+        help="Rows labeled between progress logs during teacher inference.",
+    )
     distill.add_argument("--temperature", type=float, default=3.0)
     distill.add_argument("--alpha", type=float, default=0.7)
     distill.add_argument("--xgb-rounds", type=int, default=200)
@@ -150,6 +199,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_logging(getattr(args, "log_level", "INFO"))
     return args.func(args)
 
 

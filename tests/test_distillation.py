@@ -6,10 +6,15 @@ from sklearn.model_selection import StratifiedKFold, train_test_split
 from tabfm_kd.distillation import (
     DistillConfig,
     TabFMDistiller,
+    _fmt_duration,
     _resolve_teacher_sample_size,
     collect_oof_targets,
 )
-from tabfm_kd.teacher import SklearnFallbackTeacher
+from tabfm_kd.teacher import (
+    SklearnFallbackTeacher,
+    resolve_compute_device,
+    resolve_teacher_batch_size,
+)
 
 
 class _RecordingTeacher:
@@ -123,6 +128,7 @@ def test_end_to_end_classification_distillation(tmp_path):
             alpha=0.6,
             xgb_params={"n_estimators": 40, "max_depth": 3},
             random_state=4,
+            device="cpu",
         )
     )
     distiller.fit(X_train, y_train)
@@ -149,9 +155,42 @@ def test_end_to_end_regression_distillation():
             alpha=0.5,
             xgb_params={"n_estimators": 30, "max_depth": 3},
             random_state=5,
+            device="cpu",
         )
     )
     distiller.fit(X, y)
     pred = distiller.predict(X)
     assert pred.shape == (len(y),)
     assert np.isfinite(pred).all()
+
+
+def test_oof_chunked_prediction_covers_every_row():
+    X, y = make_classification(
+        n_samples=40,
+        n_features=4,
+        n_informative=3,
+        random_state=8,
+    )
+    frame = pd.DataFrame(X)
+    teacher = SklearnFallbackTeacher(random_state=8, max_iter=15)
+    soft = collect_oof_targets(
+        teacher,
+        frame,
+        y,
+        task_type="classification",
+        n_folds=4,
+        random_state=8,
+        chunk_size=7,
+    )
+    assert soft.shape == (40, 2)
+    assert np.allclose(soft.sum(axis=1), 1.0, atol=1e-6)
+
+
+def test_resolve_compute_device_and_batch_size():
+    assert resolve_compute_device("cpu") == "cpu"
+    assert resolve_teacher_batch_size(None, "cpu") == 1
+    assert resolve_teacher_batch_size(None, "cuda") == 32
+    assert resolve_teacher_batch_size(8, "cuda") == 8
+    assert _fmt_duration(0) == "0s"
+    assert _fmt_duration(75) == "1m 15s"
+    assert _fmt_duration(3661) == "1h 01m 01s"

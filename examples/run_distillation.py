@@ -11,6 +11,7 @@ Pass ``--teacher tabfm`` on Python >= 3.11 if Google TabFM is already installed.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -60,7 +61,18 @@ def main() -> None:
     parser.add_argument("--teacher", default="sklearn", choices=["tabfm", "sklearn"])
     parser.add_argument("--backend", default="pytorch")
     parser.add_argument("--n-folds", type=int, default=4)
+    parser.add_argument(
+        "--device",
+        default="auto",
+        help="Compute device: auto (CUDA if available), cpu, or cuda.",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     bundle = load_dataset(
         args.dataset,
@@ -80,6 +92,7 @@ def main() -> None:
             teacher_backend=args.backend,
             teacher_n_estimators=4,
             n_folds=args.n_folds,
+            device=args.device,
             temperature=3.0,
             alpha=0.7,
             xgb_params={"n_estimators": 120, "max_depth": 4},
