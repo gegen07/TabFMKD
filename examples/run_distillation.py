@@ -5,7 +5,7 @@ Run from a checkout without installing this package::
     python examples/run_distillation.py --teacher sklearn --dataset breast_cancer
     python examples/run_distillation.py --csv data/table.csv --target label --task classification
 
-Pass ``--teacher tabfm`` or ``--teacher tabicl`` if the matching extra is installed.
+Pass ``--teacher tabfm``, ``tabicl``, ``tabpfn``, or ``mitra`` if the matching extra is installed.
 """
 
 from __future__ import annotations
@@ -59,7 +59,11 @@ def main() -> None:
         default="classification",
         help="Supervised task type when using --csv.",
     )
-    parser.add_argument("--teacher", default="sklearn", choices=["tabfm", "tabicl", "sklearn"])
+    parser.add_argument(
+        "--teacher",
+        default="sklearn",
+        choices=["tabfm", "tabicl", "tabpfn", "mitra", "sklearn"],
+    )
     parser.add_argument("--backend", default="pytorch")
     parser.add_argument("--n-folds", type=int, default=4)
     parser.add_argument(

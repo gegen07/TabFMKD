@@ -17,6 +17,8 @@ keywords = [
     "tabular",
     "foundation-model",
     "tabicl",
+    "tabpfn",
+    "mitra",
 ]
 dependencies = [
     "numpy>=1.24",
@@ -30,6 +32,8 @@ dependencies = [
 [project.optional-dependencies]
 tabfm = ["tabfm[pytorch]>=1.0.0"]
 tabicl = ["tabicl>=2.0.0"]
+tabpfn = ["tabpfn>=2.0.0"]
+mitra = ["autogluon.tabular[mitra]>=1.6"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

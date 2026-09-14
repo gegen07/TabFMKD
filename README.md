@@ -1,6 +1,6 @@
 # TabFM-KD
 
-Knowledge distillation from [Google TabFM](https://github.com/google-research/tabfm) or [TabICL](https://github.com/soda-inria/tabicl) into a deployable **XGBoost** student.
+Knowledge distillation from tabular foundation models — [Google TabFM](https://github.com/google-research/tabfm), [TabICL](https://github.com/soda-inria/tabicl), [TabPFN v2](https://github.com/PriorLabs/tabpfn), or [Mitra-v2](https://huggingface.co/autogluon/mitra-classifier-2) — into a deployable **XGBoost** student.
 
 TabFM and TabICL are zero-shot tabular foundation models: `fit()` stores labeled rows as in-context examples and `predict()` runs a single forward pass. That is accurate, but serving the foundation model is heavy (large GPU footprint, low throughput). This project transfers the teacher's probability distribution into a gradient-boosted tree so you keep most of the accuracy at CPU latency.
 
@@ -9,7 +9,7 @@ labeled table
      │
      ▼
 ┌─────────────────────────────┐
-│  TabFM / TabICL teacher     │
+│  TabFM / TabICL / TabPFN / Mitra │
 │  k-fold out-of-fold soft y  │  ← avoids ICL identity leakage
 └──────────────┬──────────────┘
                │  p_teacher, T, α
@@ -69,6 +69,18 @@ pip install -e ".[tabfm]"
 pip install -e ".[tabicl]"
 ```
 
+[TabPFN v2](https://github.com/PriorLabs/tabpfn) (Prior Labs):
+
+```bash
+pip install -e ".[tabpfn]"
+```
+
+[Mitra-v2](https://huggingface.co/autogluon/mitra-classifier-2) via AutoGluon's sklearn interface (`fine_tune=False` ICL, weights `autogluon/mitra-classifier-2`):
+
+```bash
+pip install -e ".[mitra]"
+```
+
 On Python 3.10, or when you do not want to pull a checkpoint, use `--teacher sklearn`. That fallback is a histogram GBDT so the pipeline, CLI, and tests still run.
 
 ## Quick start
@@ -85,7 +97,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 distiller = TabFMDistiller(
     DistillConfig(
-        teacher="tabfm",          # or "tabicl" / "sklearn"
+        teacher="tabfm",          # or "tabicl" / "tabpfn" / "mitra" / "sklearn"
         teacher_backend="pytorch",
         teacher_n_estimators=8,   # TabFM context ensemble size
         n_folds=5,
@@ -110,6 +122,12 @@ tabfm-kd distill --teacher tabfm --backend pytorch --dataset wine --output artif
 # TabICL teacher
 tabfm-kd distill --teacher tabicl --dataset wine --output artifacts/student.joblib
 
+# TabPFN v2 teacher
+tabfm-kd distill --teacher tabpfn --dataset wine --output artifacts/student.joblib
+
+# Mitra-v2 teacher (recommend --teacher-estimators 1)
+tabfm-kd distill --teacher mitra --teacher-estimators 1 --dataset wine --output artifacts/student.joblib
+
 tabfm-kd evaluate --student artifacts/student.joblib --dataset breast_cancer
 ```
 
@@ -119,6 +137,8 @@ Example script:
 python examples/run_distillation.py --teacher sklearn --dataset breast_cancer
 python examples/run_distillation.py --teacher tabfm --dataset wine
 python examples/run_distillation.py --teacher tabicl --dataset wine
+python examples/run_distillation.py --teacher tabpfn --dataset wine
+python examples/run_distillation.py --teacher mitra --dataset wine
 ```
 
 Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with `--csv path --target col`.
@@ -127,7 +147,7 @@ Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with
 
 | Knob | Default | Role |
 | --- | --- | --- |
-| `teacher` | `tabfm` | `tabfm`, `tabicl`, or `sklearn` |
+| `teacher` | `tabfm` | `tabfm`, `tabicl`, `tabpfn`, `mitra`, or `sklearn` |
 | `teacher_n_estimators` | 8 | Ensemble members for TabFM / TabICL (TabFM upstream default is 32; 8 is faster for KD) |
 | `teacher_max_num_rows` | 100 | TabFM per-bag ICL window. Also sizes the default context pool (`max_num_rows * n_estimators`) for every teacher |
 | `teacher_sample_strategy` | `proportional` | `proportional` keeps class frequencies in the ~800-row context; `balanced` equalizes them |
@@ -144,7 +164,7 @@ Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with
 
 ```
 src/tabfm_kd/
-  teacher.py        TabFM / TabICL wrappers + sklearn fallback
+  teacher.py        TabFM / TabICL / TabPFN / Mitra wrappers + sklearn fallback
   losses.py         temperature, adaptive T, confidence weights
   student.py        XGBoost on mixed soft targets
   distillation.py   k-fold collection + orchestrator
@@ -163,4 +183,4 @@ Tests use the sklearn teacher so they do not download TabFM weights.
 
 ## License notes
 
-This repository's code is Apache-2.0. TabFM **source** is Apache-2.0; the default pretrained weights pulled by `tabfm_v1_0_0.load()` are **not** — they are restricted to non-commercial, non-production use. Do not ship those weights into a commercial product. TabICL is a separately licensed package; see the [TabICL repository](https://github.com/soda-inria/tabicl) for its terms.
+This repository's code is Apache-2.0. TabFM **source** is Apache-2.0; the default pretrained weights pulled by `tabfm_v1_0_0.load()` are **not** — they are restricted to non-commercial, non-production use. Do not ship those weights into a commercial product. TabICL, TabPFN, and Mitra are separately licensed; see [TabICL](https://github.com/soda-inria/tabicl), [TabPFN](https://github.com/PriorLabs/tabpfn), and [Mitra-v2](https://huggingface.co/autogluon/mitra-classifier-2).

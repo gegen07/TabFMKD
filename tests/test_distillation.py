@@ -13,8 +13,10 @@ from tabfm_kd.distillation import (
     collect_oof_targets,
 )
 from tabfm_kd.teacher import (
+    MitraTeacher,
     SklearnFallbackTeacher,
     TabICLTeacher,
+    TabPFNTeacher,
     build_teacher,
     resolve_compute_device,
     resolve_teacher_batch_size,
@@ -279,6 +281,11 @@ def test_build_teacher_routes_tabicl_and_sklearn():
         device="cpu",
     )
     assert isinstance(sklearn_teacher, SklearnFallbackTeacher)
+    pfn = build_teacher("tabpfn", task_type="classification", device="cpu")
+    assert isinstance(pfn, TabPFNTeacher)
+    mitra = build_teacher("mitra-v2", task_type="classification", device="cpu")
+    assert isinstance(mitra, MitraTeacher)
+    assert mitra.hf_model == "autogluon/mitra-classifier-2"
     with pytest.raises(ValueError, match="Unknown teacher"):
         build_teacher("nope")
 
@@ -294,3 +301,26 @@ def test_tabicl_teacher_defers_package_import():
             teacher._make_estimator()
     else:
         assert teacher._make_estimator() is not None
+
+
+def test_tabpfn_and_mitra_teachers_defer_package_import():
+    pfn = TabPFNTeacher(device="cpu")
+    mitra = MitraTeacher(device="cpu")
+    assert isinstance(
+        TabFMDistiller(DistillConfig(teacher="tabpfn", device="cpu")).teacher,
+        TabPFNTeacher,
+    )
+    assert isinstance(
+        TabFMDistiller(DistillConfig(teacher="mitra", device="cpu")).teacher,
+        MitraTeacher,
+    )
+    try:
+        import tabpfn  # noqa: F401
+    except ImportError:
+        with pytest.raises(ImportError, match="tabfm-kd\\[tabpfn\\]"):
+            pfn._make_estimator()
+    try:
+        import autogluon.tabular  # noqa: F401
+    except ImportError:
+        with pytest.raises(ImportError, match="tabfm-kd\\[mitra\\]"):
+            mitra._make_estimator()

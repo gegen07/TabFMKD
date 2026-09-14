@@ -169,7 +169,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     distill = sub.add_parser("distill", help="Fit TabFM teacher and distill into XGBoost.")
     _add_shared_data_args(distill)
-    distill.add_argument("--teacher", default="tabfm", choices=["tabfm", "tabicl", "sklearn"])
+    distill.add_argument(
+        "--teacher",
+        default="tabfm",
+        choices=["tabfm", "tabicl", "tabpfn", "mitra", "sklearn"],
+    )
     distill.add_argument("--backend", default="pytorch", choices=["pytorch", "jax"])
     distill.add_argument("--teacher-estimators", type=int, default=8)
     distill.add_argument("--max-num-rows", type=int, default=100)
