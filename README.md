@@ -1,15 +1,15 @@
 # TabFM-KD
 
-Knowledge distillation from [Google TabFM](https://github.com/google-research/tabfm) into a deployable **XGBoost** student.
+Knowledge distillation from [Google TabFM](https://github.com/google-research/tabfm) or [TabICL](https://github.com/soda-inria/tabicl) into a deployable **XGBoost** student.
 
-TabFM is a zero-shot tabular foundation model: `fit()` stores labeled rows as in-context examples and `predict()` runs a single forward pass. That is accurate, but serving the foundation model is heavy (large GPU footprint, low throughput). This project transfers the teacher's probability distribution into a gradient-boosted tree so you keep most of the accuracy at CPU latency.
+TabFM and TabICL are zero-shot tabular foundation models: `fit()` stores labeled rows as in-context examples and `predict()` runs a single forward pass. That is accurate, but serving the foundation model is heavy (large GPU footprint, low throughput). This project transfers the teacher's probability distribution into a gradient-boosted tree so you keep most of the accuracy at CPU latency.
 
 ```
 labeled table
      │
      ▼
 ┌─────────────────────────────┐
-│  TabFM teacher (ICL)        │
+│  TabFM / TabICL teacher     │
 │  k-fold out-of-fold soft y  │  ← avoids ICL identity leakage
 └──────────────┬──────────────┘
                │  p_teacher, T, α
@@ -63,7 +63,13 @@ Google TabFM requires **Python >= 3.11** and downloads pretrained weights from H
 pip install -e ".[tabfm]"
 ```
 
-On Python 3.10, or when you do not want to pull the checkpoint, use `--teacher sklearn`. That fallback is a histogram GBDT so the pipeline, CLI, and tests still run.
+[TabICL](https://github.com/soda-inria/tabicl) is a separate ICL backbone (Python >= 3.10). Checkpoints download from Hugging Face on first `fit`:
+
+```bash
+pip install -e ".[tabicl]"
+```
+
+On Python 3.10, or when you do not want to pull a checkpoint, use `--teacher sklearn`. That fallback is a histogram GBDT so the pipeline, CLI, and tests still run.
 
 ## Quick start
 
@@ -79,7 +85,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 distiller = TabFMDistiller(
     DistillConfig(
-        teacher="tabfm",          # or "sklearn"
+        teacher="tabfm",          # or "tabicl" / "sklearn"
         teacher_backend="pytorch",
         teacher_n_estimators=8,   # TabFM context ensemble size
         n_folds=5,
@@ -101,6 +107,9 @@ tabfm-kd distill --teacher sklearn --dataset breast_cancer --output artifacts/st
 # Real TabFM teacher (Python >= 3.11 + tabfm extra)
 tabfm-kd distill --teacher tabfm --backend pytorch --dataset wine --output artifacts/student.joblib
 
+# TabICL teacher
+tabfm-kd distill --teacher tabicl --dataset wine --output artifacts/student.joblib
+
 tabfm-kd evaluate --student artifacts/student.joblib --dataset breast_cancer
 ```
 
@@ -109,6 +118,7 @@ Example script:
 ```bash
 python examples/run_distillation.py --teacher sklearn --dataset breast_cancer
 python examples/run_distillation.py --teacher tabfm --dataset wine
+python examples/run_distillation.py --teacher tabicl --dataset wine
 ```
 
 Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with `--csv path --target col`.
@@ -117,9 +127,10 @@ Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with
 
 | Knob | Default | Role |
 | --- | --- | --- |
-| `teacher` | `tabfm` | `tabfm` or `sklearn` |
-| `teacher_n_estimators` | 8 | TabFM context ensemble members (upstream default is 32; 8 is faster for KD) |
-| `teacher_max_num_rows` | 100 | TabFM in-context window |
+| `teacher` | `tabfm` | `tabfm`, `tabicl`, or `sklearn` |
+| `teacher_n_estimators` | 8 | Ensemble members for TabFM / TabICL (TabFM upstream default is 32; 8 is faster for KD) |
+| `teacher_max_num_rows` | 100 | TabFM per-bag ICL window. Also sizes the default context pool (`max_num_rows * n_estimators`) for every teacher |
+| `teacher_sample_strategy` | `proportional` | `proportional` keeps class frequencies in the ~800-row context; `balanced` equalizes them |
 | `n_folds` | 5 | Out-of-fold soft-label folds |
 | `temperature` | 3.0 | Hinton softening |
 | `alpha` | 0.7 | Soft-label vs hard-label mix |
@@ -133,7 +144,7 @@ Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with
 
 ```
 src/tabfm_kd/
-  teacher.py        TabFM wrapper + sklearn fallback
+  teacher.py        TabFM / TabICL wrappers + sklearn fallback
   losses.py         temperature, adaptive T, confidence weights
   student.py        XGBoost on mixed soft targets
   distillation.py   k-fold collection + orchestrator
@@ -152,4 +163,4 @@ Tests use the sklearn teacher so they do not download TabFM weights.
 
 ## License notes
 
-This repository's code is Apache-2.0. TabFM **source** is Apache-2.0; the default pretrained weights pulled by `tabfm_v1_0_0.load()` are **not** — they are restricted to non-commercial, non-production use. Do not ship those weights into a commercial product.
+This repository's code is Apache-2.0. TabFM **source** is Apache-2.0; the default pretrained weights pulled by `tabfm_v1_0_0.load()` are **not** — they are restricted to non-commercial, non-production use. Do not ship those weights into a commercial product. TabICL is a separately licensed package; see the [TabICL repository](https://github.com/soda-inria/tabicl) for its terms.

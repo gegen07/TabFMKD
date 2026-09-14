@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from sklearn.datasets import make_classification, make_regression
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
@@ -8,10 +9,13 @@ from tabfm_kd.distillation import (
     TabFMDistiller,
     _fmt_duration,
     _resolve_teacher_sample_size,
+    _subsample_indices,
     collect_oof_targets,
 )
 from tabfm_kd.teacher import (
     SklearnFallbackTeacher,
+    TabICLTeacher,
+    build_teacher,
     resolve_compute_device,
     resolve_teacher_batch_size,
 )
@@ -109,6 +113,67 @@ def test_teacher_sample_size_none_matches_tabfm_context_budget():
     assert _resolve_teacher_sample_size(50, max_num_rows=100, n_estimators=8) == 50
 
 
+def test_balanced_context_equalizes_classes_when_both_are_large_enough():
+    y = np.array([0] * 90 + [1] * 10)
+    idx = np.arange(len(y), dtype=np.intp)
+    rng = np.random.default_rng(0)
+    chosen = _subsample_indices(
+        y, idx, 20, "classification", rng, strategy="balanced"
+    )
+    assert len(chosen) == 20
+    counts = np.bincount(y[chosen])
+    assert counts[0] == 10
+    assert counts[1] == 10
+
+
+def test_balanced_context_uses_all_minority_rows_when_scarce():
+    y = np.array([0] * 95 + [1] * 5)
+    idx = np.arange(len(y), dtype=np.intp)
+    rng = np.random.default_rng(1)
+    chosen = _subsample_indices(
+        y, idx, 20, "classification", rng, strategy="balanced"
+    )
+    assert len(chosen) == 20
+    counts = np.bincount(y[chosen])
+    assert counts[1] == 5
+    assert counts[0] == 15
+
+
+def test_oof_balanced_context_is_class_equal_and_stays_in_train_fold():
+    n_samples = 100
+    sample_size = 20
+    n_folds = 4
+    rng = np.random.default_rng(11)
+    y = np.array([0] * 90 + [1] * 10)
+    X = pd.DataFrame(
+        {
+            "row_id": np.arange(n_samples),
+            "f0": rng.normal(size=n_samples),
+        }
+    )
+    teacher = _RecordingTeacher()
+    collect_oof_targets(
+        teacher,
+        X,
+        y,
+        task_type="classification",
+        n_folds=n_folds,
+        random_state=11,
+        sample_size=sample_size,
+        sample_strategy="balanced",
+    )
+    splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=11)
+    for (train_idx, valid_idx), fitted in zip(splitter.split(X, y), teacher.fit_row_ids):
+        assert len(fitted) == sample_size
+        assert set(fitted).issubset(set(train_idx))
+        assert set(fitted).isdisjoint(set(valid_idx))
+        fitted_y = y[fitted]
+        n_pos_train = int((y[train_idx] == 1).sum())
+        n_pos_fit = int((fitted_y == 1).sum())
+        assert n_pos_fit == min(n_pos_train, sample_size // 2)
+        assert int((fitted_y == 0).sum()) == sample_size - n_pos_fit
+
+
 def test_end_to_end_classification_distillation(tmp_path):
     X, y = make_classification(
         n_samples=120,
@@ -169,6 +234,7 @@ def test_oof_chunked_prediction_covers_every_row():
         n_samples=40,
         n_features=4,
         n_informative=3,
+        n_redundant=0,
         random_state=8,
     )
     frame = pd.DataFrame(X)
@@ -194,3 +260,34 @@ def test_resolve_compute_device_and_batch_size():
     assert _fmt_duration(0) == "0s"
     assert _fmt_duration(75) == "1m 15s"
     assert _fmt_duration(3661) == "1h 01m 01s"
+
+
+def test_build_teacher_routes_tabicl_and_sklearn():
+    tabicl = build_teacher("tabicl", task_type="classification", device="cpu")
+    assert isinstance(tabicl, TabICLTeacher)
+    assert tabicl.batch_size == 1
+    sklearn_teacher = build_teacher(
+        "sklearn",
+        task_type="classification",
+        backend="pytorch",
+        n_estimators=8,
+        max_num_rows=100,
+        batch_size=32,
+        device="cpu",
+    )
+    assert isinstance(sklearn_teacher, SklearnFallbackTeacher)
+    with pytest.raises(ValueError, match="Unknown teacher"):
+        build_teacher("nope")
+
+
+def test_tabicl_teacher_defers_package_import():
+    teacher = TabICLTeacher(device="cpu")
+    distiller = TabFMDistiller(DistillConfig(teacher="tabicl", device="cpu"))
+    assert isinstance(distiller.teacher, TabICLTeacher)
+    try:
+        import tabicl  # noqa: F401
+    except ImportError:
+        with pytest.raises(ImportError, match="tabfm-kd\\[tabicl\\]"):
+            teacher._make_estimator()
+    else:
+        assert teacher._make_estimator() is not None

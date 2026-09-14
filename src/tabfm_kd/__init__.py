@@ -2,7 +2,7 @@
 
 from tabfm_kd.distillation import DistillConfig, TabFMDistiller
 from tabfm_kd.student import XGBoostStudent
-from tabfm_kd.teacher import SklearnFallbackTeacher, TabFMTeacher, build_teacher
+from tabfm_kd.teacher import SklearnFallbackTeacher, TabFMTeacher, TabICLTeacher, build_teacher
 
 __version__ = "0.1.0"
 
@@ -11,6 +11,7 @@ __all__ = [
     "TabFMDistiller",
     "XGBoostStudent",
     "TabFMTeacher",
+    "TabICLTeacher",
     "SklearnFallbackTeacher",
     "build_teacher",
 ]

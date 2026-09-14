@@ -98,6 +98,7 @@ def _cmd_distill(args: argparse.Namespace) -> int:
         teacher_n_estimators=args.teacher_estimators,
         teacher_max_num_rows=args.max_num_rows,
         teacher_sample_size=args.teacher_sample_size,
+        teacher_sample_strategy=args.teacher_sample_strategy,
         teacher_batch_size=args.teacher_batch_size,
         device=args.device,
         predict_chunk_size=args.predict_chunk_size,
@@ -149,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     distill = sub.add_parser("distill", help="Fit TabFM teacher and distill into XGBoost.")
     _add_shared_data_args(distill)
-    distill.add_argument("--teacher", default="tabfm", choices=["tabfm", "sklearn"])
+    distill.add_argument("--teacher", default="tabfm", choices=["tabfm", "tabicl", "sklearn"])
     distill.add_argument("--backend", default="pytorch", choices=["pytorch", "jax"])
     distill.add_argument("--teacher-estimators", type=int, default=8)
     distill.add_argument("--max-num-rows", type=int, default=100)
@@ -162,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
             "max_num_rows * teacher_estimators. 0 uses the full fold."
         ),
     )
+    distill.add_argument(
+        "--teacher-sample-strategy",
+        choices=["proportional", "balanced"],
+        default="proportional",
+        help=(
+            "How to draw the teacher context window. "
+            "'proportional' keeps class frequencies; "
+            "'balanced' equalizes class counts so rare labels still appear."
+        ),
+    )
     distill.add_argument("--n-folds", type=int, default=5)
     distill.add_argument(
         "--device",
@@ -172,7 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--teacher-batch-size",
         type=int,
         default=None,
-        help="TabFM inference batch size. Default: 32 on GPU, 1 on CPU.",
+        help="Teacher inference batch size. Default: TabFM 32 GPU / 1 CPU; TabICL 8 GPU / 1 CPU.",
     )
     distill.add_argument(
         "--predict-chunk-size",

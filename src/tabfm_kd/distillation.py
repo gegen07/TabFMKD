@@ -6,9 +6,11 @@ ask it to label, the soft targets collapse toward one-hot memorization
 ("ICL identity leakage"). Each sample is therefore labeled by a teacher that
 never saw it in context.
 
-Each fold teacher is also fit on a stratified sample of the complementary
-folds rather than the full split. TabFM only consumes a small in-context
-window, so materializing a huge train fold would OOM without helping quality.
+Each fold teacher is also fit on a sample of the complementary folds rather
+than the full split. TabFM only consumes a small in-context window, so
+materializing a huge train fold would OOM without helping quality. The sample
+is class-proportional by default; ``balanced`` equalizes class counts so a
+rare label still appears in the 100-row ICL window.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ from tabfm_kd.teacher import (
     Teacher,
     build_teacher,
     resolve_compute_device,
-    resolve_teacher_batch_size,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,12 +72,69 @@ def _align_proba(
     return aligned / np.clip(totals, 1e-12, None)
 
 
+_SAMPLE_STRATEGIES = {"proportional", "balanced"}
+
+
+def _resolve_sample_strategy(strategy: str) -> str:
+    key = (strategy or "proportional").strip().lower()
+    if key not in _SAMPLE_STRATEGIES:
+        known = ", ".join(sorted(_SAMPLE_STRATEGIES))
+        raise ValueError(f"teacher_sample_strategy must be one of: {known}")
+    return key
+
+
+def _class_count_summary(y: NDArray, idx: NDArray[np.intp]) -> str:
+    classes, counts = np.unique(y[idx], return_counts=True)
+    return ", ".join(f"{label}:{int(count)}" for label, count in zip(classes, counts))
+
+
+def _take_per_class(
+    y_fold: NDArray,
+    idx: NDArray[np.intp],
+    classes: NDArray,
+    take: NDArray[np.intp],
+    rng: np.random.Generator,
+) -> NDArray[np.intp]:
+    selected: list[NDArray[np.intp]] = []
+    for cls, n_take in zip(classes, take):
+        if n_take <= 0:
+            continue
+        local = np.flatnonzero(y_fold == cls)
+        rng.shuffle(local)
+        selected.append(idx[local[: int(n_take)]])
+    if not selected:
+        return np.empty(0, dtype=np.intp)
+    return np.sort(np.concatenate(selected))
+
+
+def _balanced_quota(counts: NDArray[np.intp], sample_size: int) -> NDArray[np.intp]:
+    """Split ``sample_size`` as evenly as possible, capped by class availability."""
+    take = np.zeros(len(counts), dtype=np.intp)
+    remaining = min(int(sample_size), int(counts.sum()))
+    available = np.asarray(counts, dtype=np.intp).copy()
+    while remaining > 0:
+        active = np.flatnonzero(available > 0)
+        if len(active) == 0:
+            break
+        per = remaining // len(active)
+        if per == 0:
+            take[active[:remaining]] += 1
+            remaining = 0
+            break
+        add = np.minimum(available[active], per)
+        take[active] += add
+        available[active] -= add
+        remaining -= int(add.sum())
+    return take
+
+
 def _subsample_indices(
     y: NDArray,
     idx: NDArray[np.intp],
     sample_size: int,
     task_type: str,
     rng: np.random.Generator,
+    strategy: str = "proportional",
 ) -> NDArray[np.intp]:
     """Pick ``sample_size`` rows from ``idx``, stratified when classifying."""
     idx = np.asarray(idx, dtype=np.intp)
@@ -87,8 +145,14 @@ def _subsample_indices(
         chosen = rng.choice(n, size=sample_size, replace=False)
         return np.sort(idx[chosen])
 
+    strategy = _resolve_sample_strategy(strategy)
     y_fold = y[idx]
     classes, counts = np.unique(y_fold, return_counts=True)
+    counts = np.asarray(counts, dtype=np.intp)
+    if strategy == "balanced":
+        take = _balanced_quota(counts, sample_size)
+        return _take_per_class(y_fold, idx, classes, take, rng)
+
     selected: list[NDArray[np.intp]] = []
     remaining = sample_size
     n_classes = len(classes)
@@ -124,11 +188,12 @@ def _context_indices(
     sample_size: int | None,
     task_type: str,
     random_state: int,
+    strategy: str = "proportional",
 ) -> NDArray[np.intp]:
     if sample_size is None:
         return np.asarray(idx, dtype=np.intp)
     rng = np.random.default_rng(random_state)
-    return _subsample_indices(y, idx, sample_size, task_type, rng)
+    return _subsample_indices(y, idx, sample_size, task_type, rng, strategy=strategy)
 
 
 def _resolve_teacher_sample_size(
@@ -207,6 +272,7 @@ def collect_oof_targets(
     random_state: int,
     classes: NDArray | None = None,
     sample_size: int | None = None,
+    sample_strategy: str = "proportional",
     chunk_size: int = 8192,
 ) -> NDArray[np.float64]:
     """Out-of-fold teacher predictions used as distillation targets.
@@ -214,8 +280,11 @@ def collect_oof_targets(
     Each fold teacher is fit on a sample of the complementary folds
     (``sample_size`` rows; ``None`` keeps the full split) and then labels
     the held-out rows. Sampling never pulls from the validation fold, so
-    ICL identity leakage stays blocked.
+    ICL identity leakage stays blocked. ``sample_strategy`` is
+    ``proportional`` (preserve class frequency) or ``balanced`` (equal
+    counts, leftover slots go to classes that still have rows).
     """
+    sample_strategy = _resolve_sample_strategy(sample_strategy)
     n_samples = len(y)
     n_folds = _effective_folds(y, n_folds, task_type)
     if task_type == "classification":
@@ -231,11 +300,14 @@ def collect_oof_targets(
         splitter = KFold(n_splits=n_folds, shuffle=True, random_state=random_state)
         splits = splitter.split(X)
 
+    strategy_note = (
+        f", context sample {sample_size} ({sample_strategy})" if sample_size else ""
+    )
     logger.info(
         "Collecting out-of-fold teacher labels: %d rows, %d folds%s",
         n_samples,
         n_folds,
-        f", context sample {sample_size}" if sample_size else "",
+        strategy_note,
     )
     oof_started = time.perf_counter()
     fold_times: list[float] = []
@@ -246,13 +318,20 @@ def collect_oof_targets(
             sample_size=sample_size,
             task_type=task_type,
             random_state=random_state + fold_i,
+            strategy=sample_strategy,
         )
         fold_started = time.perf_counter()
+        class_note = (
+            f" [{_class_count_summary(y, context_idx)}]"
+            if task_type == "classification"
+            else ""
+        )
         logger.info(
-            "Fold %d/%d: fitting teacher on %d context rows, then labeling %d held-out rows",
+            "Fold %d/%d: fitting teacher on %d context rows%s, then labeling %d held-out rows",
             fold_i,
             n_folds,
             len(context_idx),
+            class_note,
             len(valid_idx),
         )
         fold_teacher = teacher.clone_unfitted()
@@ -317,9 +396,14 @@ class DistillConfig:
     enough for diverse TabFM bags without copying a huge fold into memory.
     Pass ``0`` to disable sampling and fit on the full fold.
 
+    ``teacher_sample_strategy`` controls how those rows are drawn.
+    ``proportional`` (default) keeps the table's class frequencies;
+    ``balanced`` takes as even a count per class as the rare labels allow.
+
     ``device`` is ``auto`` (CUDA when available), ``cpu``, or ``cuda``.
     Teacher inference and the XGBoost student both follow that device.
-    ``teacher_batch_size`` of ``None`` picks 32 on GPU and 1 on CPU.
+    ``teacher_batch_size`` of ``None`` picks a teacher-specific default
+    (TabFM: 32 on GPU / 1 on CPU; TabICL: 8 on GPU / 1 on CPU).
     """
 
     task_type: str = "classification"
@@ -328,6 +412,7 @@ class DistillConfig:
     teacher_n_estimators: int = 8
     teacher_max_num_rows: int = 100
     teacher_sample_size: int | None = None
+    teacher_sample_strategy: str = "proportional"
     teacher_batch_size: int | None = None
     device: str = "auto"
     predict_chunk_size: int = 8192
@@ -358,16 +443,13 @@ class TabFMDistiller:
     ) -> None:
         self.config = config or DistillConfig()
         self.device = resolve_compute_device(self.config.device)
-        teacher_batch_size = resolve_teacher_batch_size(
-            self.config.teacher_batch_size, self.device
-        )
         self.teacher = teacher or build_teacher(
             self.config.teacher,
             task_type=self.config.task_type,
             backend=self.config.teacher_backend,
             n_estimators=self.config.teacher_n_estimators,
             max_num_rows=self.config.teacher_max_num_rows,
-            batch_size=teacher_batch_size,
+            batch_size=self.config.teacher_batch_size,
             device=self.device,
             random_state=self.config.random_state,
             **self.config.teacher_params,
@@ -403,13 +485,15 @@ class TabFMDistiller:
             max_num_rows=cfg.teacher_max_num_rows,
             n_estimators=cfg.teacher_n_estimators,
         )
+        sample_strategy = _resolve_sample_strategy(cfg.teacher_sample_strategy)
         logger.info(
-            "Starting distillation: %d rows, %d features, task=%s, teacher=%s, device=%s",
+            "Starting distillation: %d rows, %d features, task=%s, teacher=%s, device=%s, context=%s",
             len(frame),
             frame.shape[1],
             cfg.task_type,
             cfg.teacher,
             self.device,
+            sample_strategy,
         )
         if str(self.device).startswith("cuda"):
             try:
@@ -427,6 +511,7 @@ class TabFMDistiller:
             random_state=cfg.random_state,
             classes=self.classes_,
             sample_size=sample_size,
+            sample_strategy=sample_strategy,
             chunk_size=cfg.predict_chunk_size,
         )
 
@@ -459,10 +544,17 @@ class TabFMDistiller:
             sample_size=sample_size,
             task_type=cfg.task_type,
             random_state=cfg.random_state,
+            strategy=sample_strategy,
+        )
+        class_note = (
+            f" [{_class_count_summary(self._train_y_, teacher_idx)}]"
+            if cfg.task_type == "classification"
+            else ""
         )
         logger.info(
-            "Fitting full-context teacher on %d rows for later compare()",
+            "Fitting full-context teacher on %d rows%s for later compare()",
             len(teacher_idx),
+            class_note,
         )
         self.teacher.fit(_rows(self._train_X_, teacher_idx), self._train_y_[teacher_idx])
         self.teacher_fitted_ = True
