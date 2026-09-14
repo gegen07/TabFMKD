@@ -138,7 +138,7 @@ Built-in tables: `breast_cancer`, `wine`, `iris`, `diabetes`. Any CSV works with
 | `confidence_weighting` | True | Bell-shaped sample weights |
 | `augment_factor` | None | Extra Gaussian-noised numeric rows |
 
-`compare()` reports the TabFM teacher, the distilled student, and a hard-label XGBoost baseline plus accuracy/R² retention.
+`compare()` reports the teacher, the distilled student, and a hard-label XGBoost baseline plus accuracy/R² retention. Classification also includes **Gini** (`2 * ROC-AUC - 1`) and **average precision** (PR-AUC), which are more informative than accuracy on imbalanced labels.
 
 ## Layout
 
@@ -149,7 +149,7 @@ src/tabfm_kd/
   student.py        XGBoost on mixed soft targets
   distillation.py   k-fold collection + orchestrator
   data.py           sklearn / CSV loaders
-  metrics.py        accuracy, AUC, RMSE, retention
+  metrics.py        accuracy, AUC, Gini, AP, RMSE, retention
   cli.py            tabfm-kd distill | evaluate
 ```
 

@@ -9,6 +9,7 @@ import numpy as np
 from numpy.typing import NDArray
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     f1_score,
     log_loss,
     mean_absolute_error,
@@ -16,6 +17,7 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
+from sklearn.preprocessing import label_binarize
 
 
 def _safe_roc_auc(y_true: NDArray, y_proba: NDArray) -> float | None:
@@ -25,6 +27,33 @@ def _safe_roc_auc(y_true: NDArray, y_proba: NDArray) -> float | None:
         return float(roc_auc_score(y_true, y_proba, multi_class="ovr", average="macro"))
     except ValueError:
         return None
+
+
+def _safe_average_precision(y_true: NDArray, y_proba: NDArray) -> float | None:
+    """PR-AUC. Binary uses the positive-class score; multiclass is macro OvR."""
+    try:
+        if y_proba.ndim != 2:
+            return None
+        if y_proba.shape[1] == 2:
+            classes = np.unique(y_true)
+            pos_label = classes[1] if len(classes) >= 2 else classes[0]
+            return float(
+                average_precision_score(y_true, y_proba[:, 1], pos_label=pos_label)
+            )
+        classes = np.unique(y_true)
+        encoded = label_binarize(y_true, classes=classes)
+        if encoded.shape[1] == 1:
+            return float(average_precision_score(encoded[:, 0], y_proba[:, 0]))
+        if encoded.shape[1] != y_proba.shape[1]:
+            return None
+        return float(average_precision_score(encoded, y_proba, average="macro"))
+    except ValueError:
+        return None
+
+
+def gini_from_auc(roc_auc: float) -> float:
+    """Somers' D / credit-scoring Gini: ``2 * AUC - 1``."""
+    return float(2.0 * roc_auc - 1.0)
 
 
 def classification_metrics(
@@ -41,6 +70,10 @@ def classification_metrics(
         auc = _safe_roc_auc(y_true, y_proba)
         if auc is not None:
             metrics["roc_auc"] = auc
+            metrics["gini"] = gini_from_auc(auc)
+        ap = _safe_average_precision(y_true, y_proba)
+        if ap is not None:
+            metrics["average_precision"] = ap
     return metrics
 
 

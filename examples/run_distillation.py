@@ -93,6 +93,9 @@ def main() -> None:
             teacher_n_estimators=4,
             n_folds=args.n_folds,
             device=args.device,
+            teacher_sample_size=150000,
+            teacher_sample_strategy="balanced",
+            predict_chunk_size=8192,
             temperature=3.0,
             alpha=0.7,
             xgb_params={"n_estimators": 120, "max_depth": 4},
@@ -103,11 +106,18 @@ def main() -> None:
     distiller.save("artifacts/student.joblib")
 
     if bundle.task_type == "classification":
-        keys = ["accuracy", "f1_macro", "roc_auc", "log_loss"]
-        print(f"{'model':<14} " + " ".join(f"{k:>12}" for k in keys))
+        keys = [
+            "accuracy",
+            "f1_macro",
+            "roc_auc",
+            "gini",
+            "average_precision",
+            "log_loss",
+        ]
+        print(f"{'model':<14} " + " ".join(f"{k:>18}" for k in keys))
         for name in ("teacher", "student", "hard_xgb"):
             row = report.get(name) or {}
-            print(f"{name:<14} " + " ".join(f"{_fmt(row, k):>12}" for k in keys))
+            print(f"{name:<14} " + " ".join(f"{_fmt(row, k):>18}" for k in keys))
         print(f"\naccuracy retention vs teacher: {report.get('retention_accuracy', 0):.1%}")
     else:
         keys = ["rmse", "mae", "r2"]
