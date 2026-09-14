@@ -14,6 +14,7 @@ if _SRC.is_dir() and str(_SRC) not in sys.path:
 
 from tabfm_kd.data import load_dataset, train_eval_split
 from tabfm_kd.distillation import DistillConfig, TabFMDistiller
+from tabfm_kd.metrics import format_confusion_matrix
 
 logger = logging.getLogger("tabfm_kd")
 
@@ -120,6 +121,15 @@ def _cmd_distill(args: argparse.Namespace) -> int:
     distiller.save(str(output))
 
     print(json.dumps(comparison, indent=2))
+    student_cm = (comparison.get("student") or {}).get("confusion_matrix")
+    if student_cm:
+        print()
+        print(
+            format_confusion_matrix(
+                student_cm,
+                title="Student (distilled) confusion matrix  [rows=true, cols=pred]",
+            )
+        )
     print(f"\nSaved student (teacher stripped) to {output}")
     return 0
 
@@ -138,6 +148,15 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     distiller = TabFMDistiller.load(args.student)
     metrics = distiller.evaluate(X_test, y_test)
     print(json.dumps(metrics, indent=2))
+    student_cm = metrics.get("confusion_matrix")
+    if student_cm:
+        print()
+        print(
+            format_confusion_matrix(
+                student_cm,
+                title="Student (distilled) confusion matrix  [rows=true, cols=pred]",
+            )
+        )
     return 0
 
 

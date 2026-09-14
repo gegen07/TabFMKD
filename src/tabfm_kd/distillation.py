@@ -31,7 +31,12 @@ from tabfm_kd.losses import (
     confidence_weights,
     soften_probabilities,
 )
-from tabfm_kd.metrics import classification_metrics, regression_metrics, retention
+from tabfm_kd.metrics import (
+    classification_metrics,
+    confusion_counts,
+    regression_metrics,
+    retention,
+)
 from tabfm_kd.student import XGBoostStudent
 from tabfm_kd.teacher import (
     Teacher,
@@ -570,12 +575,16 @@ class TabFMDistiller:
     def predict_proba(self, X: Any) -> NDArray:
         return self.student.predict_proba(X)
 
-    def evaluate(self, X: Any, y: Any) -> dict[str, float]:
+    def evaluate(self, X: Any, y: Any) -> dict[str, Any]:
         y_array = np.asarray(y)
         if self.config.task_type == "classification":
             proba = self.predict_proba(X)
             pred = self.classes_[proba.argmax(axis=1)] if self.classes_ is not None else self.predict(X)
-            return classification_metrics(y_array, pred, proba)
+            metrics: dict[str, Any] = classification_metrics(y_array, pred, proba)
+            metrics["confusion_matrix"] = confusion_counts(
+                y_array, pred, labels=self.classes_
+            )
+            return metrics
         return regression_metrics(y_array, self.predict(X))
 
     def compare(self, X: Any, y: Any) -> dict[str, Any]:
@@ -608,6 +617,9 @@ class TabFMDistiller:
                 log_label="teacher predict_proba",
             )
             result["student"] = classification_metrics(y_array, student_pred, student_proba)
+            result["student"]["confusion_matrix"] = confusion_counts(
+                y_array, student_pred, labels=self.classes_
+            )
             result["teacher"] = classification_metrics(y_array, teacher_pred, teacher_proba)
             result["retention_accuracy"] = retention(
                 result["student"]["accuracy"], result["teacher"]["accuracy"]

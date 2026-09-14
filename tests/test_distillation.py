@@ -202,6 +202,9 @@ def test_end_to_end_classification_distillation(tmp_path):
     comparison = distiller.compare(X_test, y_test)
     assert "teacher" in comparison and "student" in comparison
     assert comparison["hard_xgb"]
+    cm = comparison["student"]["confusion_matrix"]
+    assert cm["labels"]
+    assert len(cm["matrix"]) == len(cm["labels"])
 
     path = tmp_path / "student.joblib"
     distiller.save(str(path))

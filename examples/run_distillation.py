@@ -21,6 +21,7 @@ if _SRC.is_dir():
 
 from tabfm_kd import DistillConfig, TabFMDistiller
 from tabfm_kd.data import load_dataset, train_eval_split
+from tabfm_kd.metrics import format_confusion_matrix
 
 
 def _drop_columns(raw: str | None) -> list[str]:
@@ -119,6 +120,15 @@ def main() -> None:
             row = report.get(name) or {}
             print(f"{name:<14} " + " ".join(f"{_fmt(row, k):>18}" for k in keys))
         print(f"\naccuracy retention vs teacher: {report.get('retention_accuracy', 0):.1%}")
+        student_cm = (report.get("student") or {}).get("confusion_matrix")
+        if student_cm:
+            print()
+            print(
+                format_confusion_matrix(
+                    student_cm,
+                    title="Student (distilled) confusion matrix  [rows=true, cols=pred]",
+                )
+            )
     else:
         keys = ["rmse", "mae", "r2"]
         print(f"{'model':<14} " + " ".join(f"{k:>12}" for k in keys))

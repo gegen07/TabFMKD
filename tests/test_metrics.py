@@ -1,6 +1,11 @@
 import numpy as np
 
-from tabfm_kd.metrics import classification_metrics, gini_from_auc
+from tabfm_kd.metrics import (
+    classification_metrics,
+    confusion_counts,
+    format_confusion_matrix,
+    gini_from_auc,
+)
 
 
 def test_gini_is_twice_auc_minus_one():
@@ -51,3 +56,17 @@ def test_multiclass_average_precision_is_macro_ovr():
     metrics = classification_metrics(y_true, y_pred, y_proba)
     assert 0.0 < metrics["average_precision"] <= 1.0
     assert abs(metrics["gini"] - (2.0 * metrics["roc_auc"] - 1.0)) < 1e-12
+
+
+def test_confusion_matrix_rows_are_true_labels():
+    y_true = np.array([0, 0, 0, 1, 1, 1])
+    y_pred = np.array([0, 0, 1, 1, 1, 0])
+    report = confusion_counts(y_true, y_pred)
+    assert report["labels"] == [0, 1]
+    assert report["matrix"] == [[2, 1], [1, 2]]
+    text = format_confusion_matrix(
+        report, title="Student (distilled) confusion matrix"
+    )
+    assert "Student (distilled) confusion matrix" in text
+    assert "true 0" in text
+    assert "pred 1" in text

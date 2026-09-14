@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
+    confusion_matrix,
     f1_score,
     log_loss,
     mean_absolute_error,
@@ -54,6 +55,58 @@ def _safe_average_precision(y_true: NDArray, y_proba: NDArray) -> float | None:
 def gini_from_auc(roc_auc: float) -> float:
     """Somers' D / credit-scoring Gini: ``2 * AUC - 1``."""
     return float(2.0 * roc_auc - 1.0)
+
+
+def _jsonable_label(value: Any) -> int | float | str:
+    if isinstance(value, (np.integer, int)) and not isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(value)
+    return str(value)
+
+
+def confusion_counts(
+    y_true: NDArray,
+    y_pred: NDArray,
+    labels: NDArray | None = None,
+) -> dict[str, Any]:
+    """Rows are true labels, columns are predicted labels (sklearn convention)."""
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    if labels is None:
+        classes = np.unique(np.concatenate([y_true, y_pred]))
+    else:
+        classes = np.asarray(labels)
+    matrix = confusion_matrix(y_true, y_pred, labels=classes)
+    return {
+        "labels": [_jsonable_label(label) for label in classes],
+        "matrix": matrix.astype(int).tolist(),
+    }
+
+
+def format_confusion_matrix(
+    report: dict[str, Any],
+    title: str = "Confusion matrix",
+) -> str:
+    labels = [str(label) for label in report.get("labels") or []]
+    matrix = report.get("matrix") or []
+    if not labels or not matrix:
+        return title + "\n(empty)"
+    col_headers = [f"pred {label}" for label in labels]
+    row_headers = [f"true {label}" for label in labels]
+    width = 6
+    width = max(width, max(len(header) for header in col_headers + row_headers))
+    for row in matrix:
+        for count in row:
+            width = max(width, len(str(int(count))))
+    lines = [
+        title,
+        f"{'':>{width}} " + " ".join(f"{header:>{width}}" for header in col_headers),
+    ]
+    for header, row in zip(row_headers, matrix):
+        cells = " ".join(f"{int(count):>{width}d}" for count in row)
+        lines.append(f"{header:>{width}} {cells}")
+    return "\n".join(lines)
 
 
 def classification_metrics(
