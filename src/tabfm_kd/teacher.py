@@ -588,6 +588,132 @@ class MitraTeacher:
         )
 
 
+class KumoTeacher:
+    """sklearn-style wrapper around NVIDIA KumoTabular foundation model.
+
+    Uses ``sdm.models.KumoTabular`` from ``structured-data-models``.
+    Processes context and query tables with induced set attention and Fourier projections.
+    """
+
+    def __init__(
+        self,
+        task_type: str = "classification",
+        size: str = "medium",
+        device: str = "auto",
+        n_estimators: int = 4,
+        random_state: int = 42,
+        **estimator_kwargs: Any,
+    ) -> None:
+        if task_type not in {"classification", "regression"}:
+            raise ValueError("task_type must be 'classification' or 'regression'")
+        self.task_type = task_type
+        self.size = size
+        self.device = resolve_compute_device(device)
+        self.n_estimators = n_estimators
+        self.random_state = random_state
+        self.estimator_kwargs = estimator_kwargs
+        self.model_: Any = None
+        self.classes_: NDArray | None = None
+        self.stypes_x_: dict | None = None
+
+    def fit(self, X: Any, y: Any) -> KumoTeacher:
+        try:
+            import sdm
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                "structured-data-models is not installed. Install with `pip install structured-data-models`."
+            ) from exc
+
+        frame = (
+            X.reset_index(drop=True)
+            if isinstance(X, pd.DataFrame)
+            else pd.DataFrame(X)
+        )
+        y_arr = np.asarray(y)
+        self.classes_ = np.unique(y_arr)
+        
+        self.stypes_x_ = {c: sdm.Stype.numerical for c in frame.columns}
+        stypes_y = {"target": sdm.Stype.categorical if self.task_type == "classification" else sdm.Stype.numerical}
+        y_df = pd.DataFrame({"target": pd.Categorical(y_arr) if self.task_type == "classification" else y_arr})
+
+        x_ctx = sdm.TableTensor.from_pandas(frame, stypes=self.stypes_x_).to(self.device)
+        y_ctx = sdm.TableTensor.from_pandas(y_df, stypes=stypes_y).to(self.device)
+
+        kumo_params = _accepted_kwargs(
+            sdm.models.KumoTabular,
+            {
+                "task": self.task_type,
+                "size": self.size,
+                "device": self.device,
+                **self.estimator_kwargs,
+            },
+        )
+        self.model_ = sdm.models.KumoTabular(**kumo_params)
+        self.model_.fit(x_ctx, y_ctx, num_estimators=self.n_estimators)
+        return self
+
+    def predict_proba(self, X: Any) -> NDArray:
+        if self.task_type != "classification":
+            raise AttributeError("predict_proba is only available for classification")
+        if self.model_ is None:
+            raise RuntimeError("KumoTeacher must be fit before predict_proba")
+        import pandas as pd
+        import sdm
+
+        frame = (
+            X.reset_index(drop=True)
+            if isinstance(X, pd.DataFrame)
+            else pd.DataFrame(X)
+        )
+        x_qry = sdm.TableTensor.from_pandas(frame, stypes=self.stypes_x_).to(self.device)
+        pred = self.model_.predict(x_qry)
+        df_pred = pred.to_pandas()
+        if len(self.classes_) == 2 and "1" in df_pred.columns:
+            p1 = df_pred["1"].to_numpy(dtype=np.float64)
+            p0 = 1.0 - p1
+            return np.column_stack([p0, p1])
+        # Multi-class
+        parts = []
+        for c in self.classes_:
+            c_str = str(c)
+            if c_str in df_pred.columns:
+                parts.append(df_pred[c_str].to_numpy(dtype=np.float64))
+            else:
+                parts.append(np.zeros(len(df_pred), dtype=np.float64))
+        res = np.column_stack(parts)
+        res = res / np.clip(res.sum(axis=1, keepdims=True), 1e-12, None)
+        return res
+
+    def predict(self, X: Any) -> NDArray:
+        if self.model_ is None:
+            raise RuntimeError("KumoTeacher must be fit before predict")
+        if self.task_type == "classification":
+            proba = self.predict_proba(X)
+            return self.classes_[proba.argmax(axis=1)]
+        import pandas as pd
+        import sdm
+
+        frame = (
+            X.reset_index(drop=True)
+            if isinstance(X, pd.DataFrame)
+            else pd.DataFrame(X)
+        )
+        x_qry = sdm.TableTensor.from_pandas(frame, stypes=self.stypes_x_).to(self.device)
+        pred = self.model_.predict(x_qry)
+        return np.asarray(pred.to_pandas().iloc[:, 0].to_numpy())
+
+    def clone_unfitted(self) -> KumoTeacher:
+        return KumoTeacher(
+            task_type=self.task_type,
+            size=self.size,
+            device=self.device,
+            n_estimators=self.n_estimators,
+            random_state=self.random_state,
+            **self.estimator_kwargs,
+        )
+
+
 class SklearnFallbackTeacher:
     """Histogram GBDT stand-in used when foundation-model weights are unavailable."""
 
@@ -725,6 +851,8 @@ def build_teacher(
         return TabPFNTeacher(task_type=task_type, **_tabpfn_init_kwargs(kwargs))
     if key in {"mitra", "mitrav2"}:
         return MitraTeacher(task_type=task_type, **_mitra_init_kwargs(kwargs))
+    if key in {"kumo", "kumotabular", "kumoai"}:
+        return KumoTeacher(task_type=task_type, **kwargs)
     if key == "tabfm":
         return TabFMTeacher(task_type=task_type, **kwargs)
     raise ValueError(f"Unknown teacher '{name}'")

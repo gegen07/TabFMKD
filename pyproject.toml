@@ -34,13 +34,14 @@ tabfm = ["tabfm[pytorch]>=1.0.0"]
 tabicl = ["tabicl>=2.0.0"]
 tabpfn = ["tabpfn>=2.0.0"]
 mitra = ["autogluon.tabular[mitra]>=1.6"]
+kumo = ["structured-data-models>=0.2.1"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
 tabfm-kd = "tabfm_kd.cli:main"
 
 [project.urls]
-Homepage = ""
+Homepage = "https://github.com/gegen07/TabFMKD"
 
 [tool.setuptools.packages.find]
 where = ["src"]
